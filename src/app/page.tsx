@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function Home() {
   if (!isConfigured()) return <main className="setup-page">
-    <div className="brand"><span className="brand-icon"><FlaskConical /></span> BenchMark</div>
+    <div className="brand"><span className="brand-icon"><FlaskConical /></span><span className="brand-title">BenchMark <span className="beta-badge">beta</span></span></div>
     <section className="setup-hero"><span className="eyebrow">LESS ADMIN. MORE DISCOVERY.</span>
       <h1>Your lab.<br /><em>Accounted for.</em></h1>
       <p>A shared, up-to-date view of what’s on your shelves. Scan a label, record what’s left, and keep your team in the loop.</p>

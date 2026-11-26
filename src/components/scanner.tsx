@@ -8,6 +8,7 @@ export function Scanner({ onScan }: { onScan: (value: string, format: string) =>
   const [camera, setCamera] = useState(false);
   const [error, setError] = useState("");
   const [manual, setManual] = useState("");
+  const [manualType, setManualType] = useState("MANUAL");
   const callback = useRef(onScan);
   callback.current = onScan;
   useEffect(() => {
@@ -43,7 +44,7 @@ export function Scanner({ onScan }: { onScan: (value: string, format: string) =>
 
   function manualSubmit(event: FormEvent) {
     event.preventDefault();
-    if (manual.trim()) onScan(manual.trim(), "MANUAL");
+    if (manual.trim()) onScan(manual.trim(), manualType);
   }
 
   return <div className="form-stack">
@@ -52,6 +53,11 @@ export function Scanner({ onScan }: { onScan: (value: string, format: string) =>
     <div id={id} className={camera ? "camera-feed" : ""} />
     {camera && <p className="muted camera-hint"><ScanLine size={18} /> Hold the label steady and keep the whole code in view.</p>}
     {error && <p role="alert" className="message error">{error}</p>}
-    <form className="form-stack" onSubmit={manualSubmit}><label>Or enter barcode / product URL<input value={manual} onChange={event => setManual(event.target.value)} maxLength={2048} required placeholder="Barcode number or https://…" /></label><button className="button secondary" type="submit">Use this code</button></form>
+    <form className="form-stack" onSubmit={manualSubmit}>
+      <label>Code type<select value={manualType} onChange={event => { setManualType(event.target.value); setManual(""); }}><option value="MANUAL">Barcode / QR / product URL</option><option value="CATALOGUE_NUMBER">Catalogue number</option></select></label>
+      <label>{manualType === "CATALOGUE_NUMBER" ? "Enter catalogue number" : "Or enter barcode / product URL"}<input value={manual} onChange={event => setManual(event.target.value)} maxLength={manualType === "CATALOGUE_NUMBER" ? 120 : 2048} required placeholder={manualType === "CATALOGUE_NUMBER" ? "e.g. T1503-1KG" : "Barcode number or https://…"} /></label>
+      <p className="field-hint">We check your lab first, then the shared product catalogue. Printed catalogue numbers can be entered here; reading them from photos is not available yet.</p>
+      <button className="button secondary" type="submit">Use this code</button>
+    </form>
   </div>;
 }

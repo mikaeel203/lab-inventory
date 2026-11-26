@@ -1,5 +1,9 @@
 export type Role = "lab" | "student";
 export type Unit = "L" | "mL" | "µL" | "kg" | "g" | "mg" | "count";
+export type CatalogueProduct = {
+  id: string; name: string; manufacturer_supplier: string; catalogue_number: string;
+  container_size: number; unit: Unit; product_url: string | null;
+};
 export type Profile = { id: string; role: Role; display_name: string };
 export type Lab = { id: string; owner_id: string; name: string; department: string; institution: string };
 export type Item = {

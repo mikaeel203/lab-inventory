@@ -31,7 +31,7 @@ For a development tunnel, also add its exact hostname to `allowedDevOrigins` in 
 
 ## Set up Supabase
 
-1. In the SQL editor of a **new, dedicated project**, execute each file in `supabase/migrations` once in filename order: `202611240001_initial.sql`, `202611250001_catalogue_number.sql`, `202611250002_stock_tracking.sql`, then `202611250003_live_updates_and_delete.sql`. Alternatively, link the project using the Supabase CLI and apply migrations with `supabase db push`.
+1. In the SQL editor of a **new, dedicated project**, execute each file in `supabase/migrations` once in filename order: `202611240001_initial.sql`, `202611250001_catalogue_number.sql`, `202611250002_stock_tracking.sql`, `202611250003_live_updates_and_delete.sql`, then `202611260001_shared_product_catalogue.sql`. Alternatively, link the project using the Supabase CLI and apply migrations with `supabase db push`.
 2. Keep the `private` schema outside the API's exposed schemas. Public table writes are intentionally disallowed, including for lab owners; all changes use transactional RPCs.
 3. Enable email/password authentication and **Confirm email**. Set the minimum password length to **12**. Configure production SMTP before inviting real users.
 4. Set **Site URL** to the application origin, initially `http://localhost:3000`. Add `http://localhost:3000/auth/confirm` to allowed redirect URLs. Add the exact HTTPS production callback before deployment; avoid wildcard production redirects.
@@ -44,7 +44,21 @@ The app supplies `/auth/confirm` as the redirect for both flows. This handler ex
 
 ## Upgrading an existing installation to BenchMark
 
-Apply only migrations you have not already run, in filename order, as `postgres` in Supabase's SQL Editor. If stock tracking is already installed, run **only `supabase/migrations/202611250003_live_updates_and_delete.sql`**. Do not rerun earlier migrations or recreate your database. Restart the app afterwards.
+Apply only migrations you have not already run, in filename order, as `postgres` in Supabase's SQL Editor. If live updates and deletion are already installed, run **only `supabase/migrations/202611260001_shared_product_catalogue.sql`**. Do not rerun earlier migrations or recreate your database. Restart or redeploy the app afterwards.
+
+### Shared product catalogue
+
+Copy the entire `supabase/migrations/202611260001_shared_product_catalogue.sql` file into **Supabase → SQL Editor → New query**, then click **Run**. Keep RLS enabled. The migration adds catalogue tables and restricted lookup/save functions; it preserves existing inventory and does not copy historical records into the catalogue.
+
+The catalogue is a reusable product reference for **all labs**, not shared inventory. It contains only product name, Manufacturer/Supplier, Catalogue Number, package size and measurement unit, an optional confirmed public product link, and separately confirmed reusable barcode/QR aliases. Shared records contain no contributing lab/account identifiers, source timestamps, stock counts, remaining quantities, thresholds, memberships or requests. Inventory and its audit history remain lab-private. Authenticated users with a profile can look up product details, including students who cannot yet access a lab's inventory.
+
+When saving a product, a lab owner can confirm that its details were checked against the printed public label. This confirmation starts unchecked; suggestions are not automatically published. Separate confirmations are required for reusable codes and public links. Never confirm internal asset codes, batch-specific identifiers, lab nicknames or private URLs. Shared links and HTTP(S) QR values must be plain HTTPS product URLs without query strings, fragments or credentials. These checks cannot establish that a page or code is genuinely public: the owner's label verification is essential.
+
+Lookup checks the current lab first, then the shared catalogue. A shared match fills product specifications only; the lab must enter its own number of units and total remaining amount. Multiple supplier/package matches require selection. Recognized aliases reopen an existing matching lab entry instead of adding stock. If a URL code has no catalogue match, the existing product-page metadata lookup runs; unknown numeric codes and unavailable lookups allow manual entry. There is no generic online catalogue-number search. Choose **Code type → Catalogue number** to type a printed number, or use **Find saved product** in the editor. Photo/OCR reading is not implemented yet.
+
+Shared identity includes Manufacturer/Supplier, Catalogue Number and normalized package capacity/category. Equivalent sizes such as 1 L and 1000 mL match; catalogue punctuation and leading zeros are retained. Existing per-lab catalogue-number uniqueness is unchanged, so separate suppliers or package sizes with the same number cannot yet be separate entries in one lab without qualified identifiers.
+
+Conflicting confirmed names, links or code mappings never overwrite the existing reference. The entire save rolls back, and the owner can review the label or remove catalogue/code confirmation to save the inventory privately. There is no in-app catalogue correction/review queue yet; corrections require trusted database administration. Catalogue references persist independently after local inventory edits, deletion or deletion of the contributing account, and they never silently change another lab's saved inventory. A full disposable-test reset must explicitly clear `product_catalogue_codes` and `product_catalogue` as well as lab/account tables; deleting accounts alone does not clear this reference data.
 
 ### Live updates, deletion and confirmation emails
 
@@ -83,7 +97,7 @@ URL lookup suggests the single product's structured `sku`, or `mpn` if SKU is ab
 - **Membership administration:** accept/reject requests, optional responses, cancellation by the requester, leaving a lab, and revoking students. Revocation cancels outstanding quantity requests.
 - **Inventory:** product name, required Manufacturer/Supplier, Catalogue Number, barcode/format, unit count and size, total remaining quantity, unit, optional product URL, stock-warning thresholds, search (including suppliers), filters, sortable lists, editing, archival, and restoration. Units are `L`, `mL`, `µL`, `kg`, `g`, `mg`, and whole-number `count`. Zero remaining stock is valid. Quantity sorting normalizes units within the selected measurement category, not across mass and volume.
 - **Camera scanning:** QR, Data Matrix, EAN-13, EAN-8, UPC-A, UPC-E, and Code 128; rear-camera preference and manual fallback. Repeat scans reuse the matching product in that lab, including archived products. They never automatically add stock.
-- **Name suggestions:** reuse existing lab entries; for URL codes, try Product JSON-LD and page metadata. Names remain editable. Unknown numeric codes require manual naming; there is no universal barcode catalog or paid lookup provider. No product link is fabricated.
+- **Name suggestions:** reuse existing lab entries, then confirmed shared product details; unmatched URL codes try Product JSON-LD and page metadata. Names remain editable. Unknown numeric codes require manual naming; there is no universal barcode catalog or paid lookup provider. No product link is fabricated.
 - **Quantity approvals:** students propose a replacement remaining total and unit count, in the product's existing unit, with an optional reason. Only the owning lab can approve. Version checks prevent old requests or edits from overwriting newer inventory; stale requests must be resubmitted.
 - **Activity and inboxes:** in-app request status and the latest 100 audit events; the database retains audit history. Data refreshes through Realtime notifications, on window focus/visibility, reconnection, after writes, and with a five-second visible-page fallback.
 - **Home-screen installation:** web manifest, PNG icons, Apple icon, and a network-only service worker. No inventory response is cached by the worker and no writes are queued offline. Browser authentication cookies persist the session; inventory is held only in live application memory.
@@ -113,7 +127,7 @@ npm run test:e2e
 
 Unit tests exercise quantity rules, filters, metadata parsing, SSRF protections, redirects, DNS pinning, and response limits. Database tests execute the **actual migration** in PGlite (PostgreSQL in-process), switch to the authenticated/anonymous roles, and test RLS, RPC authorization, membership acknowledgement, approvals, stale updates, and revocation.
 
-Browser tests run desktop and phone-sized Chromium against an isolated, loopback-only test backend. That backend executes the actual migration and RPCs in PGlite but simulates the Supabase Auth/PostgREST transport. It is only started by Playwright, uses disposable data, and is never part of the deployed application. The tests exercise signup forms, manual scanning fallback, editable lookup suggestions, inventory changes, student requests, and additional-lab warnings.
+Browser tests run desktop and phone-sized Chromium against an isolated, loopback-only test backend. That backend executes the actual migration and RPCs in PGlite but simulates the Supabase Auth/PostgREST transport. It is only started by Playwright, uses disposable data, and is never part of the deployed application. The tests exercise signup forms, manual scanning fallback, editable lookup suggestions, inventory changes, student requests, additional-lab warnings, cross-lab product-reference reuse, ambiguous catalogue choices and conflict handling. Catalogue database tests cover the shared-column allowlist, isolated stock, restricted writes, alias mappings, rollback and the absence of historical backfill.
 
 PGlite serializes connections. The concurrent-pending-request test verifies decision-time rechecks but is **not proof of real multi-connection PostgreSQL locking**. Production SMTP, real Supabase sessions, camera hardware, and PostgreSQL concurrency must also be checked in staging.
 
@@ -126,6 +140,7 @@ PGlite serializes connections. The concurrent-pending-request test verifies deci
 5. Revoke a member while a quantity approval is pending; ensure access disappears and the request cannot subsequently apply. Verify requests belonging to a second, still-active lab remain unaffected.
 6. On Android Chrome and iPhone Safari over HTTPS, test actual labels for each used barcode format, permission denial, camera release when closing the dialog, manual entry, numeric unknown codes, URL lookup failure, and interrupted connectivity. Autofill is a suggestion, not a chemical identity verification.
 7. Install/add to home screen; confirm standalone navigation, sign-out, no private offline inventory cache, and usable layouts at 360px width and with text zoom.
+8. Confirm a public product and reusable code in one lab, then scan it in another. Verify only product specifications fill in, stock/threshold fields remain blank and no source lab is shown. Test ambiguous suppliers/package sizes, conflicting confirmations and saving privately after a conflict. Check real label accuracy before confirming; the catalogue is a convenience, not an independent chemical-identity verification service.
 
 ## Deployment
 

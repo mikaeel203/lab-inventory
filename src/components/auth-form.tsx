@@ -87,7 +87,7 @@ export function AuthForm() {
   }
 
   return <main className="auth-layout">
-    <section className="auth-story"><a className="brand" href="/"><span className="brand-icon"><FlaskConical /></span> BenchMark</a>
+    <section className="auth-story"><a className="brand" href="/"><span className="brand-icon"><FlaskConical /></span><span className="brand-title">BenchMark <span className="beta-badge">beta</span></span></a>
       <div><span className="eyebrow">A LITTLE ORDER. A LOT OF POSSIBILITY.</span><h1>Know what’s<br />in your lab.<br /><em>Get back to science.</em></h1>
         <p>One place for your lab’s products, quantities, and people. Made for the phone already in your pocket.</p></div>
       <div className="story-points"><span><ScanLine /> Scan. Record. Find.</span><span><ShieldCheck /> Private to your lab.</span></div>

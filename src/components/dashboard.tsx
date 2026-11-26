@@ -15,6 +15,7 @@ import { InstallApp } from "./install-app";
 import { stockStatus } from "@/lib/inventory";
 import { ConfirmationDialog, type Confirmation } from "./confirmation-dialog";
 import { startWorkspaceSync } from "@/lib/workspace-sync";
+import { localCatalogueMatches } from "@/lib/catalogue";
 
 type Snapshot = { labs: Lab[]; lab?: Lab; items: Item[]; memberships: Membership[]; joins: JoinRequest[]; inbox: JoinInbox[]; quantities: QuantityRequest[]; profiles: Profile[]; audit: AuditEvent[] };
 type Editor = { item?: Item; barcode?: string; format?: string };
@@ -126,13 +127,14 @@ export function Dashboard({ profile }: { profile: Profile }) {
   async function save(draft: ItemDraft) {
     if (!snapshot?.lab || !editor) return false;
     const result = await perform(() => owner
-      ? client.rpc("save_inventory_item", { p_lab_id: snapshot.lab!.id, p_name: draft.name, p_quantity: draft.quantity, p_unit: draft.unit,
+      ? client.rpc(draft.confirmProduct ? "save_catalogued_inventory_item" : "save_inventory_item", { p_lab_id: snapshot.lab!.id, p_name: draft.name, p_quantity: draft.quantity, p_unit: draft.unit,
         p_barcode: draft.barcode || null, p_barcode_format: draft.format || null, p_product_url: draft.url || null,
         p_item_id: editor.item?.id ?? null, p_version: editor.item?.version ?? null, p_catalogue_number: draft.catalogueNumber,
         p_manufacturer_supplier: draft.manufacturerSupplier, p_container_count: draft.containerCount, p_container_size: draft.containerSize,
-        p_minimum_containers: draft.minimumContainers, p_minimum_quantity: draft.minimumQuantity })
+        p_minimum_containers: draft.minimumContainers, p_minimum_quantity: draft.minimumQuantity,
+        ...(draft.confirmProduct ? { p_confirm_product: true, p_confirm_code: draft.confirmCode, p_confirm_url: draft.confirmUrl } : {}) })
       : client.rpc("request_quantity_change", { p_item_id: editor.item!.id, p_quantity: draft.quantity, p_unit: draft.unit, p_version: editor.item!.version, p_reason: draft.reason || null, p_container_count: draft.containerCount }),
-    owner ? "Inventory updated." : "Change request sent to your lab for approval.");
+    owner ? draft.confirmProduct ? "Inventory updated. Confirmed product details remembered in the shared catalogue; your lab’s stock remains private." : "Inventory updated." : "Change request sent to your lab for approval.");
     if (result) setEditor(null);
     return result;
   }
@@ -149,7 +151,7 @@ export function Dashboard({ profile }: { profile: Profile }) {
   ];
 
   return <div className="app-shell">
-    <aside className="sidebar"><a className="brand" href="/"><span className="brand-icon"><FlaskConical /></span><span>BenchMark<small>SPACE FOR SCIENCE</small></span></a>
+    <aside className="sidebar"><a className="brand" href="/"><span className="brand-icon"><FlaskConical /></span><span><span className="brand-title">BenchMark <span className="beta-badge">beta</span></span><small>SPACE FOR SCIENCE</small></span></a>
       <div className="workspace-label">WORKSPACE</div>
       <nav aria-label="Main navigation">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-link ${tab === id ? "selected" : ""}`} onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined}><Icon size={19} /><span>{label}</span>{id === "requests" && pendingTotal > 0 && <span className="nav-count">{pendingTotal}</span>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="privacy-card"><ShieldCheck size={22} /><strong>Your lab. Your data.</strong><p>Only approved members can see what’s on your shelves.</p></div></div>
@@ -186,11 +188,15 @@ export function Dashboard({ profile }: { profile: Profile }) {
         }}>Remove access</button></div>) : <div className="empty-state"><Users size={34} /><h3>No students yet</h3><p>Students can find this lab by name and request to join.</p></div>}</section>}
         {tab === "history" && owner && <section className="panel"><div className="section-heading"><div><h2>Lab activity</h2><p className="muted">The latest 100 recorded actions. Full history is retained in the database.</p></div><History /></div>{snapshot.audit.length ? <ul className="activity-list">{snapshot.audit.map(event => <li key={event.id}><span className="activity-dot" /><div><strong>{event.action.replaceAll(".", " · ").replaceAll("_", " ")}</strong>{typeof event.details.name === "string" && <p>{event.details.name}</p>}{event.details.quantity !== undefined && <small>Proposed / recorded: {String(event.details.quantity)} {String(event.details.unit)}</small>}<small>{new Date(event.created_at).toLocaleString()}</small></div></li>)}</ul> : <div className="empty-state"><History /><h3>A clean page</h3><p>Product updates and approval decisions will appear here.</p></div>}</section>}
       </>}
-      <footer className="workspace-footer"><span>BenchMark</span><span>Made for the bench, not the paperwork.</span></footer>
+      <footer className="workspace-footer"><span className="brand-title">BenchMark <span className="beta-badge">beta</span></span><span>Made for the bench, not the paperwork.</span></footer>
       <InstallApp />
     </main></div>
-    {scanning && <Modal title="Scan a product" onClose={() => setScanning(false)}><Scanner onScan={(barcode, format) => { setScanning(false); setError(""); setEditor({ item: snapshot?.items.find(item => item.barcode === barcode), barcode, format }); }} /></Modal>}
-    {editor && <Modal title={owner ? editor.item ? "Edit product" : "Add a product" : "Request a quantity change"} onClose={() => { if (!busy) setEditor(null); }}>{error && <p role="alert" className="message error">{error}</p>}<ItemEditor item={editor.item} barcode={editor.barcode} format={editor.format} student={!owner} busy={busy} onSave={save} /></Modal>}
+    {scanning && <Modal title="Scan a product" onClose={() => setScanning(false)}><Scanner onScan={(barcode, format) => {
+      setScanning(false); setError("");
+      const local = format === "CATALOGUE_NUMBER" ? localCatalogueMatches(snapshot?.items ?? [], barcode) : (snapshot?.items ?? []).filter(item => item.barcode === barcode);
+      setEditor({ item: local.length === 1 ? local[0] : undefined, barcode, format });
+    }} /></Modal>}
+    {editor && <Modal title={owner ? editor.item ? "Edit product" : "Add a product" : "Request a quantity change"} onClose={() => { if (!busy) setEditor(null); }}>{error && <p role="alert" className="message error">{error}</p>}<ItemEditor key={editor.item?.id ?? `${editor.format}:${editor.barcode}`} item={editor.item} barcode={editor.barcode} format={editor.format} student={!owner} busy={busy} onSave={save} items={snapshot?.items ?? []} onOpenItem={item => { setError(""); setEditor({ item }); }} /></Modal>}
     {confirmation && <ConfirmationDialog confirmation={confirmation} busy={busy} error={error} onClose={() => { setConfirmation(null); setError(""); }} onConfirm={() => { void confirmation.action().then(success => { if (success) setConfirmation(null); }); }} />}
   </div>;
 }

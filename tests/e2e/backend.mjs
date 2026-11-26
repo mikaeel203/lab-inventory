@@ -26,7 +26,7 @@ async function addAccount(email, password, metadata, confirmed = true) {
   return user;
 }
 async function reset() {
-  accounts.clear(); await database.exec("truncate auth.users cascade");
+  accounts.clear(); await database.exec("truncate auth.users cascade; truncate public.product_catalogue cascade");
   const owner = await addAccount("lab@example.test", "test-password-123", { role: "lab", display_name: "Chemistry Lab", lab_name: "Chemistry Lab", department: "Chemistry", institution: "Example University" });
   await addAccount("other@example.test", "test-password-123", { role: "lab", display_name: "Biology Lab", lab_name: "Biology Lab", department: "Biology", institution: "Example University" });
   await addAccount("student@example.test", "test-password-123", { role: "student", display_name: "Alex Student" });
@@ -50,7 +50,7 @@ function userFrom(request) {
   } catch { return undefined; }
 }
 const tables = new Set(["profiles", "labs", "memberships", "join_requests", "inventory_items", "quantity_requests", "audit_events"]);
-const rpcs = new Set(["request_membership", "membership_inbox", "decide_membership", "end_membership", "cancel_join_request", "save_inventory_item", "archive_inventory_item", "delete_inventory_item", "request_quantity_change", "decide_quantity_change", "reserve_lookup"]);
+const rpcs = new Set(["request_membership", "membership_inbox", "decide_membership", "end_membership", "cancel_join_request", "save_inventory_item", "archive_inventory_item", "delete_inventory_item", "request_quantity_change", "decide_quantity_change", "reserve_lookup", "lookup_product_catalogue", "save_catalogued_inventory_item"]);
 
 createServer(async (request, response) => {
   response.setHeader("Access-Control-Allow-Origin", "http://127.0.0.1:3100");
@@ -89,7 +89,7 @@ createServer(async (request, response) => {
         const keys = Object.keys(body);
         if (keys.some(key => !/^p_[a-z_]+$/.test(key))) throw new Error("Invalid parameter");
         const args = keys.map((key, index) => `${key} => $${index + 1}`).join(",");
-        if (rpc === "membership_inbox") return (await transaction.query(`select * from public.${rpc}(${args})`, Object.values(body))).rows;
+        if (rpc === "membership_inbox" || rpc === "lookup_product_catalogue") return (await transaction.query(`select * from public.${rpc}(${args})`, Object.values(body))).rows;
         return (await transaction.query(`select public.${rpc}(${args}) as result`, Object.values(body))).rows[0].result;
       }
       const table = url.pathname.split("/").at(-1);

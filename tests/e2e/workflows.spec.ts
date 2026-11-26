@@ -10,6 +10,17 @@ async function signIn(page: Page, email = "lab@example.test") {
 
 test.beforeEach(async ({ request }) => { await request.post("http://127.0.0.1:54329/reset"); });
 
+test("beta badge appears beside the app name on sign-in and in the workspace", async ({ page, isMobile }) => {
+  await page.goto("/auth");
+  await expect(page.locator(".auth-story .brand-title")).toHaveText("BenchMark beta");
+  await expect(page.locator(".auth-story .beta-badge")).toBeVisible();
+  await signIn(page);
+  await expect(page.locator(".workspace-footer .brand-title")).toHaveText("BenchMark beta");
+  await expect(page.locator(".workspace-footer .beta-badge")).toBeVisible();
+  if (!isMobile) await expect(page.locator(".sidebar .beta-badge")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test("signup offers a rate-limited confirmation resend and spam reminder", async ({ page }) => {
   await page.clock.install();
   const resends: { email: string; type: string; redirect: string | null }[] = [];
