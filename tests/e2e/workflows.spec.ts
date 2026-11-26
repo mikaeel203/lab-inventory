@@ -143,7 +143,7 @@ test("separate lab and student sessions receive membership, request, inventory a
 test("signup collects the right account details and verifies by email", async ({ page }) => {
   await page.goto("/auth");
   await expect(page).toHaveTitle(/BenchMark/);
-  await expect(page.getByRole("link", { name: "BenchMark", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "BenchMark beta", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Create an account", exact: true }).click();
   await expect(page.getByLabel("Lab name", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Department", { exact: true })).toBeVisible();
