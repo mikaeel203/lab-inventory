@@ -31,6 +31,7 @@
 .button.destructive{background:var(--danger);color:#fff;border-color:var(--danger)}
 .button.destructive:hover{background:#85322c}
 .resend-confirmation{display:grid;gap:12px;margin-top:18px;overflow-wrap:anywhere}
+.auth-existing-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
 .brand-title{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .beta-badge{display:inline-block;padding:2px 5px;border:1px solid #d5e5cc;border-radius:5px;background:#e9f3e5;color:var(--green);font-family:"DM Sans",system-ui,sans-serif;font-size:9px;font-weight:600;line-height:1.3;letter-spacing:.3px}
 .catalogue-matches{display:grid;gap:8px}
@@ -38,4 +39,6 @@
 .catalogue-choice span{font-size:12px;font-weight:400}
 .catalogue-confirmation{margin:0;padding:16px;border:1px solid var(--border);border-radius:12px;min-width:0;background:#f5f6f2}
 .catalogue-confirmation legend{padding:0 5px;font-size:13px;font-weight:600}
+.request-product-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0;overflow-wrap:anywhere}
+.request-product-details dt{font-size:11px;color:var(--muted)}.request-product-details dd{margin:3px 0 0;font-size:13px}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}

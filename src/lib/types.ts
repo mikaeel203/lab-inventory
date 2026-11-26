@@ -24,3 +24,7 @@ export type QuantityRequest = {
   container_count: number | null;
 };
 export type AuditEvent = { id: string; action: string; created_at: string; details: Record<string, unknown> };
+export type ProductRequest = Pick<Item, "name" | "catalogue_number" | "barcode" | "barcode_format" | "quantity" | "unit" | "product_url"> & {
+  id: string; lab_id: string; student_id: string; manufacturer_supplier: string; container_count: number; container_size: number;
+  reason: string | null; status: string; response: string | null; created_at: string; item_id: string | null;
+};

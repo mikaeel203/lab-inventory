@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, Bell, Building2, FlaskConical, GraduationCap, History, LayoutGrid, LogOut, Plus, RefreshCw, ScanLine, ShieldCheck, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/browser";
-import type { AuditEvent, Item, JoinInbox, JoinRequest, Lab, Membership, Profile, QuantityRequest } from "@/lib/types";
+import type { AuditEvent, Item, JoinInbox, JoinRequest, Lab, Membership, ProductRequest, Profile, QuantityRequest } from "@/lib/types";
 import { InventoryList } from "./inventory-list";
 import { ItemEditor, type ItemDraft } from "./item-editor";
 import { LabDirectory } from "./lab-directory";
@@ -17,7 +17,7 @@ import { ConfirmationDialog, type Confirmation } from "./confirmation-dialog";
 import { startWorkspaceSync } from "@/lib/workspace-sync";
 import { localCatalogueMatches } from "@/lib/catalogue";
 
-type Snapshot = { labs: Lab[]; lab?: Lab; items: Item[]; memberships: Membership[]; joins: JoinRequest[]; inbox: JoinInbox[]; quantities: QuantityRequest[]; profiles: Profile[]; audit: AuditEvent[] };
+type Snapshot = { labs: Lab[]; lab?: Lab; items: Item[]; memberships: Membership[]; joins: JoinRequest[]; inbox: JoinInbox[]; quantities: QuantityRequest[]; products: ProductRequest[]; profiles: Profile[]; audit: AuditEvent[] };
 type Editor = { item?: Item; barcode?: string; format?: string };
 type Result = { error: { message: string } | null; data?: unknown };
 
@@ -64,10 +64,15 @@ export function Dashboard({ profile }: { profile: Profile }) {
         : labIds.length ? await readAll<Lab>((start, end) => client.from("labs").select("*").in("id", labIds).order("name").order("id").range(start, end)) : [];
       const available = labs.filter(lab => owner || memberships.some(member => member.lab_id === lab.id));
       const lab = available.find(entry => entry.id === selectedLab.current) ?? available[0];
-      const [items, quantities, profiles, audit] = await Promise.all([
+      const [items, quantities, products, profiles, audit] = await Promise.all([
         lab ? readAll<Item>((start, end) => client.from("inventory_items").select("*").eq("lab_id", lab.id).order("id").range(start, end)) : [],
         readAll<QuantityRequest>((start, end) => {
           let query = client.from("quantity_requests").select("*").order("created_at", { ascending: false }).order("id");
+          if (owner && lab) query = query.eq("lab_id", lab.id);
+          return query.range(start, end);
+        }),
+        readAll<ProductRequest>((start, end) => {
+          let query = client.from("product_requests").select("*").order("created_at", { ascending: false }).order("id");
           if (owner && lab) query = query.eq("lab_id", lab.id);
           return query.range(start, end);
         }),
@@ -79,11 +84,13 @@ export function Dashboard({ profile }: { profile: Profile }) {
         inbox = await readAll<JoinInbox>((start, end) => client.rpc("membership_inbox", { p_lab_id: lab.id }).range(start, end));
       }
       if (current === generation.current) {
+        const changedLab = selectedLab.current !== (lab?.id ?? "");
         selectedLab.current = lab?.id ?? "";
-        setSnapshot({ labs, lab, items, memberships, joins, inbox, quantities, profiles, audit });
+        setSnapshot({ labs, lab, items, memberships, joins, inbox, quantities, products, profiles, audit });
         setLoadError("");
         if (!background) setError("");
-        setEditor(previous => previous?.item && !items.some(item => item.id === previous.item!.id) ? null : previous);
+        setEditor(previous => !lab || changedLab || (previous?.item && !items.some(item => item.id === previous.item!.id)) ? null : previous);
+        if (!lab || changedLab) setScanning(false);
       }
     } catch (failure) {
       if (current === generation.current) { setSnapshot(null); setLoadError(failure instanceof Error ? failure.message : "Could not load your lab. Reconnect and try again."); }
@@ -115,7 +122,7 @@ export function Dashboard({ profile }: { profile: Profile }) {
       const result = await action();
       if (result.error) throw new Error(result.error.message.includes("duplicate key") ? "There is already a matching product or pending request. Refresh and review the existing entry." : result.error.message);
       await refresh();
-      setNotice(result.data === "stale" ? "The product changed. This request is now stale; the student must resubmit." : result.data === "cancelled" ? "The request is no longer eligible because membership ended." : message);
+      setNotice(result.data === "stale" ? "This request is now stale. Inventory was not changed; review the request details before resubmitting." : result.data === "cancelled" ? "The request is no longer eligible because membership ended." : message);
       return true;
     } catch (failure) {
       await refresh();
@@ -133,8 +140,12 @@ export function Dashboard({ profile }: { profile: Profile }) {
         p_manufacturer_supplier: draft.manufacturerSupplier, p_container_count: draft.containerCount, p_container_size: draft.containerSize,
         p_minimum_containers: draft.minimumContainers, p_minimum_quantity: draft.minimumQuantity,
         ...(draft.confirmProduct ? { p_confirm_product: true, p_confirm_code: draft.confirmCode, p_confirm_url: draft.confirmUrl } : {}) })
-      : client.rpc("request_quantity_change", { p_item_id: editor.item!.id, p_quantity: draft.quantity, p_unit: draft.unit, p_version: editor.item!.version, p_reason: draft.reason || null, p_container_count: draft.containerCount }),
-    owner ? draft.confirmProduct ? "Inventory updated. Confirmed product details remembered in the shared catalogue; your lab’s stock remains private." : "Inventory updated." : "Change request sent to your lab for approval.");
+      : editor.item ? client.rpc("request_quantity_change", { p_item_id: editor.item.id, p_quantity: draft.quantity, p_unit: draft.unit, p_version: editor.item.version, p_reason: draft.reason || null, p_container_count: draft.containerCount })
+        : client.rpc("request_product_addition", { p_lab_id: snapshot.lab!.id, p_name: draft.name, p_quantity: draft.quantity, p_unit: draft.unit,
+          p_manufacturer_supplier: draft.manufacturerSupplier, p_container_count: draft.containerCount, p_container_size: draft.containerSize,
+          p_catalogue_number: draft.catalogueNumber || null, p_barcode: draft.barcode || null, p_barcode_format: draft.format || null,
+          p_product_url: draft.url || null, p_reason: draft.reason || null }),
+    owner ? draft.confirmProduct ? "Inventory updated. Confirmed product details remembered in the shared catalogue; your lab’s stock remains private." : "Inventory updated." : editor.item ? "Change request sent to your lab for approval." : "Product submitted to your lab for approval. Inventory is unchanged until approved.");
     if (result) setEditor(null);
     return result;
   }
@@ -142,7 +153,7 @@ export function Dashboard({ profile }: { profile: Profile }) {
   const lab = snapshot?.lab;
   const activeItems = snapshot?.items.filter(item => !item.archived) ?? [];
   const pending = (owner ? snapshot?.inbox : snapshot?.joins)?.filter(request => request.status === "pending").length ?? 0;
-  const pendingTotal = pending + (snapshot?.quantities.filter(request => request.status === "pending").length ?? 0);
+  const pendingTotal = pending + (snapshot?.quantities.filter(request => request.status === "pending").length ?? 0) + (snapshot?.products.filter(request => request.status === "pending").length ?? 0);
   const nav = [
     { id: "inventory", label: "Inventory", icon: LayoutGrid },
     { id: "requests", label: "Requests", icon: Bell },
@@ -168,23 +179,25 @@ export function Dashboard({ profile }: { profile: Profile }) {
       {(error || loadError) && <p className="message error" role="alert">{error || loadError}</p>}
       {!snapshot && loading && <div className="panel empty-state" role="status">Loading your workspace…</div>}
       {snapshot && <>
-        {snapshot.memberships.length > 0 && !owner && <div className="lab-switcher"><label>Current lab<select value={lab?.id ?? ""} disabled={busy || loading} onChange={event => { setEditor(null); void refresh(event.target.value); }}>{snapshot.labs.filter(entry => snapshot.memberships.some(member => member.lab_id === entry.id)).map(entry => <option key={entry.id} value={entry.id}>{entry.name} · {entry.institution}</option>)}</select></label><button className="text-button danger" disabled={busy} onClick={() => {
-          if (lab) { setError(""); setConfirmation({ title: "Leave lab?", message: `Leave ${lab.name}? You will lose inventory access and pending quantity requests will be cancelled.`, label: "Leave lab", action: () => perform(() => client.rpc("end_membership", { p_lab_id: lab.id, p_student_id: profile.id }), "You have left the lab.") }); }
+        {snapshot.memberships.length > 0 && !owner && <div className="lab-switcher"><label>Current lab<select value={lab?.id ?? ""} disabled={busy || loading} onChange={event => { setEditor(null); setScanning(false); void refresh(event.target.value); }}>{snapshot.labs.filter(entry => snapshot.memberships.some(member => member.lab_id === entry.id)).map(entry => <option key={entry.id} value={entry.id}>{entry.name} · {entry.institution}</option>)}</select></label><button className="text-button danger" disabled={busy} onClick={() => {
+          if (lab) { setError(""); setConfirmation({ title: "Leave lab?", message: `Leave ${lab.name}? You will lose inventory access and pending product and quantity requests will be cancelled.`, label: "Leave lab", action: () => perform(() => client.rpc("end_membership", { p_lab_id: lab.id, p_student_id: profile.id }), "You have left the lab.") }); }
         }}>Leave lab</button></div>}
         {tab === "inventory" && (lab ? <>
           <section className="stats-grid"><div className="stat-card"><span className="stat-icon"><FlaskConical /></span><div><span>Products tracked</span><strong>{activeItems.length}</strong></div></div><div className="stat-card"><span className="stat-icon warm"><LayoutGrid /></span><div><span>Depleted / Low stock</span><strong>{activeItems.filter(item => stockStatus(item) === "depleted").length} / {activeItems.filter(item => stockStatus(item) === "low").length}</strong></div></div><button className="stat-card stat-button" onClick={() => setTab("requests")}><span className="stat-icon lavender"><Bell /></span><div><span>Pending requests</span><strong>{pendingTotal}</strong></div><ArrowUpRight size={18} /></button></section>
-          <div className="inventory-heading"><div><h2>{lab.name}</h2><p className="muted">{owner ? "Your shared record of what’s on the shelf." : "Read-only access · Request a change to update a quantity."}</p></div>{owner && <div className="inventory-buttons"><button className="button secondary" onClick={() => { setError(""); setEditor({}); }} disabled={busy}><Plus size={17} />Add manually</button><button className="button primary" onClick={() => setScanning(true)} disabled={busy}><ScanLine size={18} />Scan product</button></div>}</div>
+          <div className="inventory-heading"><div><h2>{lab.name}</h2><p className="muted">{owner ? "Your shared record of what’s on the shelf." : "Submit products or quantity changes for lab approval."}</p></div><div className="inventory-buttons"><button className="button secondary" onClick={() => { setError(""); setEditor({}); }} disabled={busy || loading}><Plus size={17} />Add manually</button><button className="button primary" onClick={() => setScanning(true)} disabled={busy || loading}><ScanLine size={18} />Scan product</button></div></div>
           <InventoryList items={snapshot.items} owner={owner} busy={busy} onEdit={item => { setError(""); setEditor({ item }); }}
             onArchive={item => { setError(""); setConfirmation({ title: "Archive product?", message: `Archive ${item.name}? It will be hidden from students. You can restore it later from archived inventory.`, label: "Archive product", action: () => perform(() => client.rpc("archive_inventory_item", { p_item_id: item.id, p_version: item.version }), "Product archived.") }); }}
             onDelete={item => { setError(""); setConfirmation({ title: "Permanently delete product?", message: `Delete ${item.name} permanently? This also removes its change requests and cannot be undone. An audit record is retained. Archive instead if you might need it again.`, label: "Delete permanently", action: () => perform(() => client.rpc("delete_inventory_item", { p_item_id: item.id, p_version: item.version }), "Product permanently deleted.") }); }} />
-          <div className="inventory-note"><ShieldCheck size={17} /><span>{owner ? "Students can view inventory. Every quantity change they request needs your approval." : "Your lab reviews every quantity-change request before inventory is updated."}</span></div>
+          <div className="inventory-note"><ShieldCheck size={17} /><span>{owner ? "Every student-submitted product and quantity change needs your approval." : "Your lab reviews every new product and quantity change before inventory is updated."}</span></div>
         </> : <section className="panel welcome-panel"><GraduationCap size={42} /><span className="eyebrow">YOUR NEXT STEP</span><h2>Let’s connect you with your lab.</h2><p>Search for your institution’s lab and request to join. Once approved, you can see available products and propose quantity changes.</p><button className="button primary" onClick={() => setTab("labs")}><Building2 size={18} />Find a lab</button></section>)}
         {tab === "labs" && !owner && <LabDirectory memberships={snapshot.memberships} requests={snapshot.joins} busy={busy} onRequest={target => void perform(() => client.rpc("request_membership", { p_lab_id: target.id }), "Membership request sent.")} onCancel={request => void perform(() => client.rpc("cancel_join_request", { p_request_id: request.id }), "Membership request cancelled.")} />}
-        {tab === "requests" && <RequestInbox owner={owner} joins={owner ? snapshot.inbox : snapshot.joins} quantities={snapshot.quantities} items={snapshot.items} profiles={snapshot.profiles} labs={snapshot.labs} busy={busy}
+        {tab === "requests" && <RequestInbox owner={owner} joins={owner ? snapshot.inbox : snapshot.joins} quantities={snapshot.quantities} products={snapshot.products} items={snapshot.items} profiles={snapshot.profiles} labs={snapshot.labs} busy={busy}
+          onProductDecision={(request, approve, response) => void perform(() => client.rpc("decide_product_addition", { p_request_id: request.id, p_approve: approve, p_response: response }), approve ? "Product approved and added to inventory." : "Product request rejected.")}
+          onProductCancel={request => { setError(""); setConfirmation({ title: "Withdraw product request?", message: `Withdraw ${request.name}? It will not be added to inventory. You can submit a corrected product afterwards.`, label: "Withdraw request", action: () => perform(() => client.rpc("cancel_product_request", { p_request_id: request.id }), "Product request withdrawn.") }); }}
           onJoinDecision={(request, approve, acknowledge, response) => void perform(() => client.rpc("decide_membership", { p_request_id: request.id, p_approve: approve, p_acknowledge: acknowledge, p_response: response }), approve ? "Student accepted into the lab." : "Membership request rejected.")}
           onQuantityDecision={(request, approve, response) => void perform(() => client.rpc("decide_quantity_change", { p_request_id: request.id, p_approve: approve, p_response: response }), approve ? "Quantity change approved." : "Quantity change rejected.")} />}
         {tab === "people" && owner && <section className="panel"><div className="section-heading"><div><h2>Lab students</h2><p className="muted">Approved students can view products and request quantity changes.</p></div><Users /></div>{snapshot.memberships.length ? snapshot.memberships.map(member => <div className="member-row" key={member.id}><span className="avatar"><GraduationCap size={19} /></span><div><h3>{snapshot.profiles.find(entry => entry.id === member.student_id)?.display_name ?? "Student"}</h3><small>Joined {new Date(member.created_at).toLocaleDateString()}</small></div><button className="button secondary danger" disabled={busy} onClick={() => {
-          setError(""); setConfirmation({ title: "Remove student access?", message: `Remove ${snapshot.profiles.find(entry => entry.id === member.student_id)?.display_name ?? "this student"} from your lab? Pending quantity requests will be cancelled.`, label: "Remove access", action: () => perform(() => client.rpc("end_membership", { p_lab_id: member.lab_id, p_student_id: member.student_id }), "Student access removed.") });
+          setError(""); setConfirmation({ title: "Remove student access?", message: `Remove ${snapshot.profiles.find(entry => entry.id === member.student_id)?.display_name ?? "this student"} from your lab? Pending product and quantity requests will be cancelled.`, label: "Remove access", action: () => perform(() => client.rpc("end_membership", { p_lab_id: member.lab_id, p_student_id: member.student_id }), "Student access removed.") });
         }}>Remove access</button></div>) : <div className="empty-state"><Users size={34} /><h3>No students yet</h3><p>Students can find this lab by name and request to join.</p></div>}</section>}
         {tab === "history" && owner && <section className="panel"><div className="section-heading"><div><h2>Lab activity</h2><p className="muted">The latest 100 recorded actions. Full history is retained in the database.</p></div><History /></div>{snapshot.audit.length ? <ul className="activity-list">{snapshot.audit.map(event => <li key={event.id}><span className="activity-dot" /><div><strong>{event.action.replaceAll(".", " · ").replaceAll("_", " ")}</strong>{typeof event.details.name === "string" && <p>{event.details.name}</p>}{event.details.quantity !== undefined && <small>Proposed / recorded: {String(event.details.quantity)} {String(event.details.unit)}</small>}<small>{new Date(event.created_at).toLocaleString()}</small></div></li>)}</ul> : <div className="empty-state"><History /><h3>A clean page</h3><p>Product updates and approval decisions will appear here.</p></div>}</section>}
       </>}
@@ -196,7 +209,7 @@ export function Dashboard({ profile }: { profile: Profile }) {
       const local = format === "CATALOGUE_NUMBER" ? localCatalogueMatches(snapshot?.items ?? [], barcode) : (snapshot?.items ?? []).filter(item => item.barcode === barcode);
       setEditor({ item: local.length === 1 ? local[0] : undefined, barcode, format });
     }} /></Modal>}
-    {editor && <Modal title={owner ? editor.item ? "Edit product" : "Add a product" : "Request a quantity change"} onClose={() => { if (!busy) setEditor(null); }}>{error && <p role="alert" className="message error">{error}</p>}<ItemEditor key={editor.item?.id ?? `${editor.format}:${editor.barcode}`} item={editor.item} barcode={editor.barcode} format={editor.format} student={!owner} busy={busy} onSave={save} items={snapshot?.items ?? []} onOpenItem={item => { setError(""); setEditor({ item }); }} /></Modal>}
+    {editor && <Modal title={owner ? editor.item ? "Edit product" : "Add a product" : editor.item ? "Request a quantity change" : "Submit a new product"} onClose={() => { if (!busy) setEditor(null); }}>{error && <p role="alert" className="message error">{error}</p>}<ItemEditor key={editor.item?.id ?? `${editor.format}:${editor.barcode}`} item={editor.item} barcode={editor.barcode} format={editor.format} student={!owner} busy={busy} onSave={save} items={snapshot?.items ?? []} onOpenItem={item => { setError(""); setEditor({ item }); }} /></Modal>}
     {confirmation && <ConfirmationDialog confirmation={confirmation} busy={busy} error={error} onClose={() => { setConfirmation(null); setError(""); }} onConfirm={() => { void confirmation.action().then(success => { if (success) setConfirmation(null); }); }} />}
   </div>;
 }

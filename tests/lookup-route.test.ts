@@ -37,10 +37,17 @@ describe("product lookup endpoint", () => {
     expect(mocks.reserve).not.toHaveBeenCalled();
     expect(mocks.lookup).not.toHaveBeenCalled();
   });
-  it("keeps students out of supplier lookup", async () => {
+  it("keeps unaffiliated students out of supplier lookup", async () => {
     mocks.role.mockResolvedValue({ data: { role: "student" } });
+    mocks.reserve.mockResolvedValue({ data: null, error: { code: "42501" } });
     expect((await POST(request())).status).toBe(403);
     expect(mocks.lookup).not.toHaveBeenCalled();
+  });
+  it("allows approved students to look up scanned product pages", async () => {
+    mocks.role.mockResolvedValue({ data: { role: "student" } });
+    expect((await POST(request())).status).toBe(200);
+    expect(mocks.reserve).toHaveBeenCalledWith("reserve_lookup");
+    expect(mocks.lookup).toHaveBeenCalled();
   });
   it("returns null catalogue numbers when lookup fails", async () => {
     mocks.lookup.mockRejectedValue(new Error("Unavailable"));

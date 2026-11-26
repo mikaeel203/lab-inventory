@@ -58,6 +58,80 @@ beforeEach(async () => {
 
 afterAll(async () => { await database?.close(); });
 
+describe("starter catalogue and explicit reference aliases", () => {
+  const seed = readFileSync(new URL("../supabase/seeds/starter_catalogue.sql", import.meta.url), "utf8");
+
+  it("imports only public reference fields, repeatably, without creating inventory", async () => {
+    await database.exec(seed);
+    const products = await asUser(student, "select * from public.product_catalogue order by id");
+    expect(products).toHaveLength(25);
+    for (const product of products) {
+      expect(Object.keys(product).sort()).toEqual(["id", "name", "manufacturer_supplier", "catalogue_number", "container_size", "unit", "product_url"].sort());
+      expect(["www.sigmaaldrich.com", "www.merckmillipore.com"]).toContain(new URL(product.product_url as string).hostname);
+    }
+    const mappings = (await database.query("select * from public.product_catalogue_aliases order by catalogue_number, product_id")).rows;
+    const codes = (await database.query("select * from public.product_catalogue_codes order by code")).rows;
+    expect(codes).toHaveLength(3);
+    for (const { code } of codes as { code: string }[]) {
+      expect(code).toMatch(/^\d{14}$/);
+      const checksum = [...code].reduce((total, digit, index) => total + Number(digit) * (index % 2 === 0 ? 3 : 1), 0);
+      expect(checksum % 10).toBe(0);
+    }
+    await database.exec(seed);
+    expect(await asUser(student, "select * from public.product_catalogue order by id")).toEqual(products);
+    expect((await database.query("select * from public.product_catalogue_aliases order by catalogue_number, product_id")).rows).toEqual(mappings);
+    expect((await database.query("select * from public.product_catalogue_codes order by code")).rows).toEqual(codes);
+    for (const table of ["inventory_items", "product_requests", "audit_events"]) {
+      expect((await database.query(`select * from public.${table}`)).rows).toEqual([]);
+    }
+  });
+
+  it("finds verified aliases, exact product URLs and package GTINs without inventing variants", async () => {
+    await database.exec(seed);
+    for (const [input, canonical] of [[" T1503 ", "T1503"], ["1.00983", "100983"], ["8.14733", "814733"], ["1042011000", "104201"]]) {
+      expect(await asUser(student, "select catalogue_number from public.lookup_product_catalogue(p_catalogue_number => $1)", [input])).toEqual([{ catalogue_number: canonical }]);
+      expect(await asUser(student, "select catalogue_number from public.lookup_product_catalogue(p_code => $1)", [input])).toEqual([{ catalogue_number: canonical }]);
+    }
+    expect(await asUser(student, "select catalogue_number from public.lookup_product_catalogue(p_code => '04061835544516')")).toEqual([{ catalogue_number: "E5134" }]);
+    expect(await asUser(student, "select catalogue_number from public.lookup_product_catalogue(p_code => 'https://www.sigmaaldrich.com/US/en/product/sial/o0625')")).toEqual([{ catalogue_number: "O0625" }]);
+    for (const input of ["0100983", "T.1503", "T-1503", "E-5134", "A-2383", "8.1473300000000002", "https://www.sigmaaldrich.com/US/en/product/sial/o0625?batch=private"]) {
+      expect(await asUser(student, "select * from public.lookup_product_catalogue(p_code => $1)", [input])).toEqual([]);
+    }
+    expect(await asUser(student, "select * from public.lookup_product_catalogue(p_catalogue_number => '1.00983', p_manufacturer_supplier => 'Another supplier')")).toEqual([]);
+  });
+
+  it("preserves ambiguous alias/URL matches and gives explicit code mappings priority", async () => {
+    await database.exec(seed);
+    const [original] = await asUser(owner, "select * from public.lookup_product_catalogue(p_catalogue_number => '100983')");
+    const alternative = (await database.query<{ id: string }>("insert into public.product_catalogue(name, manufacturer_supplier, catalogue_number, container_size, unit, product_url) values('Another package', 'Merck', '100983', 1, 'L', $1) returning id", [original.product_url])).rows[0];
+    await database.query("insert into public.product_catalogue_aliases values('1.00983', $1)", [alternative.id]);
+    expect(await asUser(owner, "select * from public.lookup_product_catalogue(p_catalogue_number => '1.00983')")).toHaveLength(2);
+    expect(await asUser(owner, "select * from public.lookup_product_catalogue(p_code => $1)", [original.product_url])).toHaveLength(2);
+    await database.query("insert into public.product_catalogue_codes values($1, $2)", [original.product_url, original.id]);
+    expect(await asUser(owner, "select * from public.lookup_product_catalogue(p_code => $1)", [original.product_url])).toEqual([original]);
+  });
+
+  it("does not modify conflicting references or barcode mappings on import", async () => {
+    await database.exec("insert into public.product_catalogue(name, manufacturer_supplier, catalogue_number, container_size, unit) values('Existing verified identity', 'Merck', '100983', 2500, 'mL')");
+    await save({ p_barcode: "04061835544516", p_confirm_code: true });
+    await database.exec(seed);
+    expect(await asUser(owner, "select name, product_url, container_size, unit from public.lookup_product_catalogue(p_catalogue_number => '100983')")).toEqual([{ name: "Existing verified identity", product_url: null, container_size: "2500", unit: "mL" }]);
+    expect(await asUser(owner, "select * from public.lookup_product_catalogue(p_catalogue_number => '1.00983')")).toEqual([]);
+    expect(await asUser(owner, "select catalogue_number from public.lookup_product_catalogue(p_code => '04061835544516')")).toEqual([{ catalogue_number: "001-ETH" }]);
+    expect(await asUser(owner, "select * from public.inventory_items")).toHaveLength(1);
+  });
+
+  it("keeps alias management restricted to trusted administration", async () => {
+    await database.exec(seed);
+    for (const actor of [owner, otherOwner, student]) {
+      for (const sql of ["select * from public.product_catalogue_aliases", "delete from public.product_catalogue_aliases", "update public.product_catalogue_aliases set catalogue_number = 'FAKE'", "insert into public.product_catalogue_aliases values('FAKE', gen_random_uuid())"]) {
+        await expect(asUser(actor, sql)).rejects.toThrow(/permission denied/);
+      }
+    }
+    await expect(asUser("00000000-0000-4000-8000-999999999999", "select * from public.lookup_product_catalogue(p_catalogue_number => 'T1503')")).rejects.toThrow(/Sign in/);
+  });
+});
+
 describe("shared product catalogue", () => {
   it("exposes only product identity and pack details, never provenance or lab stock", async () => {
     const item = await save();

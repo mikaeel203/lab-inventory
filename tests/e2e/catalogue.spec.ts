@@ -153,3 +153,73 @@ test("late catalogue responses do not replace edits or publish suggestions autom
   await expect(modal.getByLabel("Product name", { exact: true })).toHaveValue("My verified name");
   await expect(modal.getByRole("checkbox", { name: /I have verified these public product details/ })).not.toBeChecked();
 });
+
+test("catalogue is first and typing automatically finds saved details without filling stock", async ({ page }) => {
+  await rememberEthanol(page);
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await signIn(page, "other@example.test");
+  await page.getByRole("button", { name: "Add manually", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await expect(modal.locator("input").first()).toHaveAttribute("placeholder", "Enter catalogue number to autofill");
+  await modal.getByLabel("Catalogue Number", { exact: true }).fill("eth-001");
+  await expect(modal.getByLabel("Product name", { exact: true })).toHaveValue("Ethanol");
+  await expect(modal.getByLabel("Catalogue Number", { exact: true })).toHaveValue("ETH-001");
+  await expect(modal.getByLabel("Manufacturer/Supplier", { exact: true })).toHaveValue("Test Supplier");
+  await expect(modal.getByLabel("Amount per unit")).toHaveValue("1000");
+  await expect(modal.getByLabel("Number of units", { exact: true })).toHaveValue("");
+  await expect(modal.getByLabel("Total remaining quantity", { exact: true })).toHaveValue("");
+  await expect(modal.getByRole("checkbox", { name: /I have verified these public product details/ })).not.toBeChecked();
+  await modal.getByLabel("Catalogue Number", { exact: true }).fill("UNKNOWN");
+  await expect(modal.getByRole("status")).toContainText("No saved product matches");
+  for (const label of ["Product name", "Manufacturer/Supplier", "Product link (optional)"]) {
+    await expect(modal.getByLabel(label, { exact: true })).toHaveValue("");
+  }
+  await expect(modal.getByLabel("Amount per unit")).toHaveValue("");
+});
+
+test("changing catalogue uses the new supplier, keeps manual edits and cancels stale results", async ({ page }) => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  const filters: (string | null)[] = [];
+  await page.route("**/rest/v1/rpc/lookup_product_catalogue", async route => {
+    const body = route.request().postDataJSON();
+    filters.push(body.p_manufacturer_supplier);
+    if (body.p_catalogue_number === "OLD") { requested = true; await gate; }
+    await route.fulfill({ json: [{ id: body.p_catalogue_number, name: body.p_catalogue_number, manufacturer_supplier: `${body.p_catalogue_number} Supplier`, catalogue_number: body.p_catalogue_number, container_size: 5, unit: "g", product_url: null }] });
+  });
+  await signIn(page, "other@example.test");
+  await page.getByRole("button", { name: "Add manually", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Catalogue Number", { exact: true }).fill("FIRST");
+  await expect(modal.getByLabel("Manufacturer/Supplier", { exact: true })).toHaveValue("FIRST Supplier");
+  await modal.getByLabel("Catalogue Number", { exact: true }).fill("OLD");
+  await expect.poll(() => requested).toBe(true);
+  await modal.getByLabel("Product name", { exact: true }).fill("My label name");
+  await modal.getByLabel("Number of units", { exact: true }).fill("2");
+  await modal.getByLabel("Total remaining quantity", { exact: true }).fill("8");
+  await modal.getByLabel("Catalogue Number", { exact: true }).fill("NEW");
+  await expect(modal.getByLabel("Manufacturer/Supplier", { exact: true })).toHaveValue("NEW Supplier");
+  release();
+  await expect(modal.getByLabel("Product name", { exact: true })).toHaveValue("My label name");
+  await expect(modal.getByLabel("Catalogue Number", { exact: true })).toHaveValue("NEW");
+  await expect(modal.getByLabel("Number of units", { exact: true })).toHaveValue("2");
+  await expect(modal.getByLabel("Total remaining quantity", { exact: true })).toHaveValue("8");
+  expect(filters).toEqual([null, null, null]);
+});
+
+test("automatic catalogue lookup requires a choice for ambiguous matches", async ({ page }) => {
+  await page.route("**/rest/v1/rpc/lookup_product_catalogue", route => route.fulfill({ json: [
+    { id: "one", name: "Trizma base", manufacturer_supplier: "Sigma Aldrich", catalogue_number: "T1503", container_size: 1, unit: "kg", product_url: null },
+    { id: "two", name: "Trizma base", manufacturer_supplier: "Sigma Aldrich", catalogue_number: "T1503", container_size: 500, unit: "g", product_url: null },
+  ] }));
+  await signIn(page, "other@example.test");
+  await page.getByRole("button", { name: "Add manually", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Catalogue Number", { exact: true }).fill("T-1503");
+  await expect(modal.getByRole("status")).toContainText("Choose the matching manufacturer");
+  await expect(modal.getByLabel("Product name", { exact: true })).toHaveValue("");
+  await modal.getByRole("button", { name: /500 g/ }).click();
+  await expect(modal.getByLabel("Catalogue Number", { exact: true })).toHaveValue("T1503");
+  await expect(modal.getByLabel("Amount per unit")).toHaveValue("500");
+});

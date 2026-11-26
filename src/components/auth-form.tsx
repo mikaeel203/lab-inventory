@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { ArrowRight, FlaskConical, GraduationCap, ScanLine, ShieldCheck } from "lucide-react";
 import { createClient } from "@/lib/supabase/browser";
 import type { Role } from "@/lib/types";
+import { isExistingSignup } from "@/lib/signup";
 
 export function AuthForm() {
   const search = useSearchParams();
@@ -14,11 +15,13 @@ export function AuthForm() {
   const [error, setError] = useState(search.get("error") ?? "");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [emailAddress, setEmailAddress] = useState("");
+  const [existingAccount, setExistingAccount] = useState(false);
   const [confirmationEmail, setConfirmationEmail] = useState("");
   const [resendAt, setResendAt] = useState(0);
   const [resendSeconds, setResendSeconds] = useState(0);
   const authLock = useRef(false);
-  const changeMode = (next: string) => { setMode(next); setError(""); setNotice(""); };
+  const changeMode = (next: string) => { setMode(next); setError(""); setNotice(""); setExistingAccount(false); };
 
   useEffect(() => {
     if (!resendAt) return;
@@ -51,7 +54,7 @@ export function AuthForm() {
     if (authLock.current) return;
     authLock.current = true;
     const form = new FormData(event.currentTarget);
-    setBusy(true); setError(""); setNotice("");
+    setBusy(true); setError(""); setNotice(""); setExistingAccount(false);
     const client = createClient();
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
@@ -62,6 +65,11 @@ export function AuthForm() {
           data: { role, display_name: role === "lab" ? form.get("lab_name") : form.get("display_name"),
             lab_name: form.get("lab_name"), department: form.get("department"), institution: form.get("institution") },
         } });
+        if (isExistingSignup(data, failure)) {
+          setConfirmationEmail(""); setExistingAccount(true);
+          setError("An account with this email already exists. Sign in or reset your password instead.");
+          return;
+        }
         if (failure) throw failure;
         if (data.session) { router.replace("/"); router.refresh(); return; }
         setConfirmationEmail(email); startCooldown();
@@ -106,11 +114,14 @@ export function AuthForm() {
           <label>Department<input name="department" required maxLength={160} placeholder="e.g. Chemistry" /></label>
           <label>Institution<input name="institution" required maxLength={160} placeholder="University or research institution" /></label>
         </> : <label>Your name<input name="display_name" required maxLength={120} autoComplete="name" placeholder="Full name" /></label>)}
-        {mode !== "update" && <label>Email address<input name="email" type="email" required autoComplete="email" placeholder="you@institution.edu" /></label>}
+        {mode !== "update" && <label>Email address<input name="email" type="email" required autoComplete="email" placeholder="you@institution.edu" value={emailAddress} disabled={busy} onChange={event => {
+          setEmailAddress(event.target.value); setExistingAccount(false); setConfirmationEmail(""); setError(""); setNotice("");
+        }} /></label>}
         {mode !== "reset" && <label>Password<input name="password" type="password" required minLength={mode === "login" ? 1 : 12} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder={mode === "login" ? "Your password" : "At least 12 characters"} /></label>}
         {error && <p role="alert" className="message error">{error}</p>}{notice && <p role="status" className="message success">{notice}</p>}
-        <button className="button primary full" disabled={busy}>{busy ? "Working…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : mode === "update" ? "Update password" : "Sign in"}<ArrowRight size={18} /></button>
+        <button className="button primary full" disabled={busy || existingAccount}>{busy ? "Working…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : mode === "update" ? "Update password" : "Sign in"}<ArrowRight size={18} /></button>
       </form>
+      {existingAccount && <div className="auth-existing-actions"><button type="button" className="button primary" onClick={() => changeMode("login")}>Sign in instead</button><button type="button" className="button secondary" onClick={() => changeMode("reset")}>Reset password</button></div>}
       {confirmationEmail && (mode === "signup" || mode === "login") && <section className="resend-confirmation" aria-label="Email confirmation">
         <p className="field-hint">Confirmation address: <strong>{confirmationEmail}</strong>. Check your spam/junk folder before requesting another email.</p>
         <button type="button" className="button secondary full" disabled={busy || resendSeconds > 0} onClick={() => void resendConfirmation()}>

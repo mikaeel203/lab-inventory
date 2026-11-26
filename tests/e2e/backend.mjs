@@ -21,8 +21,9 @@ const accounts = new Map();
 async function addAccount(email, password, metadata, confirmed = true) {
   const id = randomUUID();
   await database.query("insert into auth.users values($1, $2)", [id, JSON.stringify(metadata)]);
-  const user = { id, email, aud: "authenticated", role: "authenticated", app_metadata: { provider: "email", providers: ["email"] }, user_metadata: metadata, created_at: new Date().toISOString(), email_confirmed_at: confirmed ? new Date().toISOString() : undefined, identities: [] };
-  accounts.set(email, { user, password });
+  const user = { id, email, aud: "authenticated", role: "authenticated", app_metadata: { provider: "email", providers: ["email"] }, user_metadata: metadata, created_at: new Date().toISOString(), email_confirmed_at: confirmed ? new Date().toISOString() : undefined,
+    identities: [{ id, identity_id: randomUUID(), user_id: id, provider: "email", identity_data: { sub: id, email } }] };
+  accounts.set(email.toLowerCase(), { user, password });
   return user;
 }
 async function reset() {
@@ -49,8 +50,8 @@ function userFrom(request) {
     return [...accounts.values()].find(account => account.user.id === id)?.user;
   } catch { return undefined; }
 }
-const tables = new Set(["profiles", "labs", "memberships", "join_requests", "inventory_items", "quantity_requests", "audit_events"]);
-const rpcs = new Set(["request_membership", "membership_inbox", "decide_membership", "end_membership", "cancel_join_request", "save_inventory_item", "archive_inventory_item", "delete_inventory_item", "request_quantity_change", "decide_quantity_change", "reserve_lookup", "lookup_product_catalogue", "save_catalogued_inventory_item"]);
+const tables = new Set(["profiles", "labs", "memberships", "join_requests", "inventory_items", "quantity_requests", "product_requests", "audit_events"]);
+const rpcs = new Set(["request_membership", "membership_inbox", "decide_membership", "end_membership", "cancel_join_request", "save_inventory_item", "archive_inventory_item", "delete_inventory_item", "request_quantity_change", "decide_quantity_change", "reserve_lookup", "lookup_product_catalogue", "save_catalogued_inventory_item", "request_product_addition", "decide_product_addition", "cancel_product_request"]);
 
 createServer(async (request, response) => {
   response.setHeader("Access-Control-Allow-Origin", "http://127.0.0.1:3100");
@@ -66,11 +67,15 @@ createServer(async (request, response) => {
     if (url.pathname === "/health") return send(200, { ready: true });
     if (url.pathname === "/reset" && request.method === "POST") { await reset(); return send(200, {}); }
     if (url.pathname === "/auth/v1/token") {
-      const account = accounts.get(body.email) ?? [...accounts.values()].find(entry => entry.user.id === body.refresh_token);
+      const account = accounts.get(body.email?.toLowerCase()) ?? [...accounts.values()].find(entry => entry.user.id === body.refresh_token);
       if (!account || (body.password && account.password !== body.password) || !account.user.email_confirmed_at) return send(400, { error: "invalid_grant", error_description: "Invalid login credentials", msg: "Invalid login credentials" });
       return send(200, session(account.user));
     }
     if (url.pathname === "/auth/v1/signup") {
+      const existing = accounts.get(body.email.toLowerCase());
+      if (existing?.user.email_confirmed_at) return send(200, { id: randomUUID(), email: body.email, aud: "authenticated", role: "authenticated",
+        user_metadata: body.data, app_metadata: { provider: "email", providers: ["email"] }, created_at: new Date().toISOString(), identities: [] });
+      if (existing) return send(200, existing.user);
       const user = await addAccount(body.email, body.password, body.data, false);
       return send(200, user);
     }

@@ -252,7 +252,7 @@ test("membership approvals, quantity requests, and additional-lab warnings", asy
   await page.getByRole("button", { name: "Sign out" }).click();
   await signIn(page, "student@example.test");
   await expect(page.getByRole("heading", { name: "Ethanol", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Add manually" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add manually" })).toBeVisible();
   await page.getByRole("button", { name: "Request change", exact: true }).click();
   await page.getByLabel("Proposed remaining quantity").fill("800");
   await page.getByLabel("Proposed number of units").fill("1");

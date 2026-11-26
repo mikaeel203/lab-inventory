@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   const { data: { user } } = await client.auth.getUser();
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
   const { data: profile } = await client.from("profiles").select("role").eq("id", user.id).single();
-  if (profile?.role !== "lab") return NextResponse.json({ error: "Lab owner access required." }, { status: 403 });
+  if (profile?.role !== "lab" && profile?.role !== "student") return NextResponse.json({ error: "Lab account or approved student membership required." }, { status: 403 });
   if (!request.body) return NextResponse.json({ error: "A URL is required." }, { status: 400 });
   const reader = request.body.getReader();
   let text = "";
@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
     if (typeof body.url !== "string") throw new Error("URL required.");
     safeLookupUrl(body.url);
     const { data: allowed, error } = await client.rpc("reserve_lookup");
+    if (error?.code === "42501") return NextResponse.json({ error: "Lab account or approved student membership required." }, { status: 403 });
     if (error) return NextResponse.json({ error: "Lookup unavailable. Enter the name manually." }, { status: 503 });
     if (!allowed) return NextResponse.json({ error: "Lookup limit reached. Wait a minute or enter the name manually." }, { status: 429 });
     try {

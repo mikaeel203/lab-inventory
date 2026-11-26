@@ -10,7 +10,7 @@ export function startWorkspaceSync(client: SupabaseClient, userId: string, refre
     debounce = setTimeout(update, 250);
   };
   const channel = client.channel(`workspace-${userId}`);
-  for (const table of ["memberships", "join_requests", "quantity_requests", "inventory_items", "audit_events"]) {
+  for (const table of ["memberships", "join_requests", "quantity_requests", "product_requests", "inventory_items", "audit_events"]) {
     channel.on("postgres_changes", { event: "INSERT", schema: "public", table }, schedule);
     channel.on("postgres_changes", { event: "UPDATE", schema: "public", table }, schedule);
   }

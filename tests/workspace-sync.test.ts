@@ -24,9 +24,9 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 describe("workspace synchronization", () => {
   it("subscribes to RLS-protected insert/update events and debounces a transaction's changes", () => {
     const sync = setup();
-    expect(sync.handlers).toHaveLength(10);
+    expect(sync.handlers).toHaveLength(12);
     expect(sync.handlers.map(handler => handler.event)).not.toContain("DELETE");
-    expect(new Set(sync.handlers.map(handler => handler.table))).toEqual(new Set(["memberships", "join_requests", "quantity_requests", "inventory_items", "audit_events"]));
+    expect(new Set(sync.handlers.map(handler => handler.table))).toEqual(new Set(["memberships", "join_requests", "quantity_requests", "product_requests", "inventory_items", "audit_events"]));
     for (const handler of sync.handlers) handler.callback();
     vi.advanceTimersByTime(249); expect(sync.refresh).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1); expect(sync.refresh).toHaveBeenCalledTimes(1);

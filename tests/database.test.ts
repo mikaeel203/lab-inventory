@@ -132,8 +132,8 @@ describe("membership workflow", () => {
 
 describe("inventory and quantity approvals", () => {
   it("publishes only the needed workspace tables without relaxing RLS", async () => {
-    expect((await database.query<{ tablename: string }>("select tablename from pg_publication_tables where pubname = 'supabase_realtime' order by tablename")).rows.map(row => row.tablename)).toEqual(["audit_events", "inventory_items", "join_requests", "memberships", "quantity_requests"]);
-    expect((await database.query("select relname from pg_class where relname in ('inventory_items', 'memberships', 'join_requests', 'quantity_requests', 'audit_events') and not relrowsecurity")).rows).toHaveLength(0);
+    expect((await database.query<{ tablename: string }>("select tablename from pg_publication_tables where pubname = 'supabase_realtime' order by tablename")).rows.map(row => row.tablename)).toEqual(["audit_events", "inventory_items", "join_requests", "memberships", "product_requests", "quantity_requests"]);
+    expect((await database.query("select relname from pg_class where relname in ('inventory_items', 'memberships', 'join_requests', 'quantity_requests', 'product_requests', 'audit_events') and not relrowsecurity")).rows).toHaveLength(0);
   });
   it("only allows owners to delete, with optimistic version checking", async () => {
     await join();
@@ -293,9 +293,143 @@ describe("inventory and quantity approvals", () => {
     await asUser(owner, "select public.save_inventory_item($1, 'Sodium chloride', 10, 'mL', 'CODE-100', 'CODE_128', null, $2, 2, p_manufacturer_supplier => 'Test Supplier', p_container_count => 2, p_container_size => 1000)", [lab, item]);
     expect(await asUser(student, "select archived from public.inventory_items")).toEqual([{ archived: false }]);
   });
-  it("limits URL lookups per lab account and rejects student lookups", async () => {
+  it("limits URL lookups per lab account and rejects unaffiliated students", async () => {
     await expect(asUser(student, "select public.reserve_lookup()")).rejects.toThrow(/owner/);
     for (let count = 0; count < 10; count++) expect(await asUser(owner, "select public.reserve_lookup() as allowed")).toEqual([{ allowed: true }]);
     expect(await asUser(owner, "select public.reserve_lookup() as allowed")).toEqual([{ allowed: false }]);
+  });
+});
+
+async function productRequest(options: Record<string, unknown> = {}, actor = student) {
+  const parameters = { p_lab_id: lab, p_name: "Acetone", p_quantity: 3.5, p_unit: "L", p_manufacturer_supplier: "Test Supplier",
+    p_container_count: 2, p_container_size: 2.5, p_catalogue_number: "NEW-001", p_barcode: "NEW-CODE", p_barcode_format: "CODE_128",
+    p_product_url: "https://supplier.example/acetone", p_reason: "Found during stocktake", ...options };
+  const argumentsSql = Object.keys(parameters).map((key, index) => `${key} => $${index + 1}`).join(", ");
+  const [request] = await asUser<{ id: string }>(actor, `select public.request_product_addition(${argumentsSql}) as id`, Object.values(parameters));
+  return request.id;
+}
+
+describe("student product submissions", () => {
+  it("requires active membership in the target lab and a student account", async () => {
+    await expect(productRequest()).rejects.toThrow(/Active student membership/);
+    await expect(productRequest({}, owner)).rejects.toThrow(/Active student membership/);
+    await join();
+    await expect(productRequest({ p_lab_id: secondLab })).rejects.toThrow(/Active student membership/);
+    expect(await asUser(owner, "select * from public.product_requests")).toHaveLength(0);
+  });
+
+  it("keeps pending proposals outside inventory and catalogue, visible only to requester and lab owner", async () => {
+    await join(); await join(lab, owner, false, outsider);
+    const request = await productRequest();
+    for (const actor of [owner, student]) expect(await asUser(actor, "select status from public.product_requests where id = $1", [request])).toEqual([{ status: "pending" }]);
+    for (const actor of [secondOwner, outsider]) expect(await asUser(actor, "select * from public.product_requests")).toHaveLength(0);
+    expect(await asUser(owner, "select * from public.inventory_items")).toHaveLength(1);
+    expect(await asUser(owner, "select * from public.product_catalogue")).toHaveLength(0);
+    for (const actor of [owner, student, outsider]) {
+      for (const query of ["update public.product_requests set status = 'approved'", "delete from public.product_requests", "insert into public.product_requests(name) values ('Forged')"]) {
+        await expect(asUser(actor, query)).rejects.toThrow(/permission denied/);
+      }
+    }
+  });
+
+  it("denies anonymous access and RPC execution", async () => {
+    for (const sql of ["select * from public.product_requests", "select public.request_product_addition(null, 'Forged', 1, 'L', 'Test', 1, 1)", "select public.decide_product_addition(null, true)", "select public.cancel_product_request(null)"]) {
+      await expect(database.transaction(async transaction => { await transaction.exec("set local role anon"); await transaction.exec(sql); })).rejects.toThrow(/permission denied/);
+    }
+  });
+
+  it("only lets the owning lab approve once, preserving all proposed fields without publishing the catalogue", async () => {
+    await join(); const request = await productRequest();
+    for (const actor of [student, outsider, secondOwner]) await expect(asUser(actor, "select public.decide_product_addition($1, true)", [request])).rejects.toThrow(/owner/);
+    await expect(asUser(owner, "select public.decide_product_addition($1, null)", [request])).rejects.toThrow(/approve or reject/);
+    expect(await asUser(owner, "select public.decide_product_addition($1, true, 'Label checked') as status", [request])).toEqual([{ status: "approved" }]);
+    const [saved] = await asUser(student, "select * from public.inventory_items where catalogue_number = 'NEW-001'");
+    expect(saved).toMatchObject({ name: "Acetone", manufacturer_supplier: "Test Supplier", quantity: "3.5", unit: "L", container_count: "2", container_size: "2.5", barcode: "NEW-CODE", barcode_format: "CODE_128", product_url: "https://supplier.example/acetone", minimum_containers: null, minimum_quantity: null });
+    expect(await asUser(student, "select item_id, status, response from public.product_requests where id = $1", [request])).toEqual([{ item_id: saved.id, status: "approved", response: "Label checked" }]);
+    await expect(asUser(owner, "select public.decide_product_addition($1, true)", [request])).rejects.toThrow(/already been decided/);
+    expect(await asUser(owner, "select * from public.product_catalogue")).toHaveLength(0);
+    expect(await asUser(owner, "select * from public.audit_events where action = 'product_request.approved'")).toHaveLength(1);
+    await asUser(owner, "select public.delete_inventory_item($1, 1)", [saved.id]);
+    expect(await asUser(student, "select status, item_id from public.product_requests where id = $1", [request])).toEqual([{ status: "approved", item_id: null }]);
+  });
+
+  it("rejects or withdraws proposals without changing stock, and allows corrected resubmission", async () => {
+    await join(); const request = await productRequest();
+    expect(await asUser(owner, "select public.decide_product_addition($1, false, 'Check the label') as status", [request])).toEqual([{ status: "rejected" }]);
+    expect(await asUser(student, "select response from public.product_requests where id = $1", [request])).toEqual([{ response: "Check the label" }]);
+    const replacement = await productRequest();
+    await expect(asUser(outsider, "select public.cancel_product_request($1)", [replacement])).rejects.toThrow(/not found/);
+    await asUser(student, "select public.cancel_product_request($1)", [replacement]);
+    await expect(asUser(owner, "select public.decide_product_addition($1, true)", [replacement])).rejects.toThrow(/already been decided/);
+    expect(await asUser(owner, "select * from public.inventory_items")).toHaveLength(1);
+    await productRequest();
+  });
+
+  it("rolls back the new item and audit if a decision fails validation", async () => {
+    await join(); const request = await productRequest();
+    await expect(asUser(owner, "select public.decide_product_addition($1, true, $2)", [request, "x".repeat(1001)])).rejects.toThrow();
+    expect(await asUser(owner, "select * from public.inventory_items")).toHaveLength(1);
+    expect(await asUser(student, "select status, item_id from public.product_requests where id = $1", [request])).toEqual([{ status: "pending", item_id: null }]);
+    expect(await asUser(owner, "select * from public.audit_events where action = 'product_request.approved'")).toHaveLength(0);
+  });
+
+  it("cancels pending additions on revocation without affecting another lab's requests", async () => {
+    await join(); await join(secondLab, secondOwner, true);
+    const request = await productRequest();
+    const other = await productRequest({ p_lab_id: secondLab });
+    await asUser(owner, "select public.end_membership($1, $2)", [lab, student]);
+    expect(await asUser(student, "select status from public.product_requests where id = $1", [request])).toEqual([{ status: "cancelled" }]);
+    expect(await asUser(student, "select status from public.product_requests where id = $1", [other])).toEqual([{ status: "pending" }]);
+    await expect(asUser(owner, "select public.decide_product_addition($1, true)", [request])).rejects.toThrow(/already been decided/);
+    await expect(productRequest()).rejects.toThrow(/Active student membership/);
+    await asUser(student, "select public.end_membership($1, $2)", [secondLab, student]);
+    expect(await asUser(student, "select status from public.product_requests where id = $1", [other])).toEqual([{ status: "cancelled" }]);
+  });
+
+  it("rechecks membership at approval even if a privileged operation bypassed the leave RPC", async () => {
+    await join(); const request = await productRequest();
+    await database.query("update public.memberships set active = false where student_id = $1", [student]);
+    expect(await asUser(owner, "select public.decide_product_addition($1, true) as status", [request])).toEqual([{ status: "cancelled" }]);
+    expect(await asUser(owner, "select * from public.inventory_items")).toHaveLength(1);
+  });
+
+  it("blocks repeat pending codes or catalogue numbers for the same student", async () => {
+    await join(); await productRequest();
+    await expect(productRequest({ p_barcode: "OTHER" })).rejects.toThrow(/duplicate key/);
+    await expect(productRequest({ p_catalogue_number: "OTHER" })).rejects.toThrow(/duplicate key/);
+    await productRequest({ p_catalogue_number: "OTHER", p_barcode: "OTHER" });
+    expect(await asUser(owner, "select * from public.product_requests")).toHaveLength(2);
+  });
+
+  it("does not add stock twice when different students submit the same product", async () => {
+    await join(); await join(lab, owner, false, outsider);
+    const first = await productRequest(); const second = await productRequest({}, outsider);
+    await asUser(owner, "select public.decide_product_addition($1, true)", [first]);
+    expect(await asUser(owner, "select public.decide_product_addition($1, true) as status", [second])).toEqual([{ status: "stale" }]);
+    expect(await asUser(owner, "select quantity from public.inventory_items where catalogue_number = 'NEW-001'")).toEqual([{ quantity: "3.5" }]);
+    await expect(productRequest({ p_barcode: "DIFFERENT" })).rejects.toThrow(/matching product/);
+  });
+
+  it("recognizes existing barcodes even for archived products", async () => {
+    await join();
+    await asUser(owner, "select public.archive_inventory_item($1, 1)", [item]);
+    await expect(productRequest({ p_barcode: "CODE-100" })).rejects.toThrow(/matching product/);
+  });
+
+  it.each([
+    { p_name: " " }, { p_manufacturer_supplier: " " }, { p_container_count: -1 }, { p_container_count: 1.5 },
+    { p_container_size: 0 }, { p_quantity: -1 }, { p_quantity: 6 }, { p_unit: "invalid" }, { p_unit: "count" },
+    { p_product_url: "javascript:alert(1)" }, { p_reason: "x".repeat(1001) }, { p_catalogue_number: "x".repeat(121) },
+  ])("rejects invalid proposed product fields: %j", async fields => {
+    await join(); await expect(productRequest(fields)).rejects.toThrow();
+    expect(await asUser(owner, "select * from public.product_requests")).toHaveLength(0);
+  });
+
+  it("allows rate-limited URL lookup for approved students and removes it on revocation", async () => {
+    await join();
+    for (let count = 0; count < 10; count++) expect(await asUser(student, "select public.reserve_lookup() as allowed")).toEqual([{ allowed: true }]);
+    expect(await asUser(student, "select public.reserve_lookup() as allowed")).toEqual([{ allowed: false }]);
+    await asUser(owner, "select public.end_membership($1, $2)", [lab, student]);
+    await expect(asUser(student, "select public.reserve_lookup()")).rejects.toThrow(/membership/);
   });
 });

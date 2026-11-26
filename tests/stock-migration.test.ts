@@ -34,6 +34,8 @@ it("upgrades existing inventory without inventing supplier or container data", a
     await database.query("select public.save_inventory_item($1, 'Legacy alcohol', 3.8, 'L', p_item_id => $2, p_version => 2, p_manufacturer_supplier => 'Merck', p_container_count => 2, p_container_size => 2.5)", [lab, item]);
     await database.exec(migration("202611250003_live_updates_and_delete"));
     await database.exec(migration("202611260001_shared_product_catalogue"));
+    await database.exec(migration("202611260002_student_product_requests"));
+    expect((await database.query("select * from public.product_requests")).rows).toEqual([]);
     expect((await database.query("select * from public.product_catalogue")).rows).toEqual([]);
     expect((await database.query("select quantity, catalogue_number, archived, manufacturer_supplier from public.inventory_items")).rows).toEqual([{ quantity: "3.8", catalogue_number: "001", archived: false, manufacturer_supplier: "Merck" }]);
   } finally {
